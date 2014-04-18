@@ -1,12 +1,1 @@
-<?php
-namespace kabootar\controller
-{
-    class defaultController extends baseController
-    {
-        public function index()
-        {
-            die('a');
-        }
-    }
-}
-        
+<?phpnamespace hathoora\kabootar\controller{    class defaultController extends baseController    {        public function index()        {            die('a');        }    }}
