@@ -27,6 +27,12 @@ namespace hathoora\kabootar\lib\mail\smtp
         private $sessionState;
 
         /**
+         * Current mail command
+         * @var
+         */
+        private $command;
+
+        /**
          * $mailData consists of two things:
          * A mail object contains an envelope and content @ http://tools.ietf.org/html/rfc5321#section-2.3.1
          *
@@ -58,12 +64,12 @@ namespace hathoora\kabootar\lib\mail\smtp
             if (preg_match('/^RSET\r\n$/i', $data))
             {
                 $this->reset();
-                $this->write(250, 'Flushed', '2.1.5');
+                $this->command = 'RSET';
             }
             else if (preg_match('/^(EHLO|HELO)/i', $data))
             {
                 $this->reset();
-                $this->sessionState = 'EHLO';
+                $this->sessionState = $this->command = 'EHLO';
             }
 
             $this->emit('stream', array($this));
@@ -74,10 +80,28 @@ namespace hathoora\kabootar\lib\mail\smtp
          */
         public function write($code, $message, $extendedCode = null)
         {
-            if ($extendedCode)
-                $extendedCode = $extendedCode .' ';
+            if (preg_match('/-$/', $code))
+                $extendedCode = null;
+            else
+            {
+                $code = $code .' ';
 
-            return $this->conn->write($code . ' ' . $extendedCode . mailParser::messageln($message . ' - '. $this->getSessionId()));
+                if ($extendedCode)
+                    $extendedCode = $extendedCode .' ';
+            }
+
+            if ($this->sessionState != 'EHLO')
+                $message .= ' - '. $this->getSessionId();
+
+            return $this->conn->write($code . $extendedCode . mailParser::messageln($message));
+        }
+
+        /**
+         * get connection
+         */
+        public function getConnection()
+        {
+            return $this->conn;
         }
 
         /**
@@ -94,6 +118,14 @@ namespace hathoora\kabootar\lib\mail\smtp
         public function getSessionState()
         {
             return $this->sessionState;
+        }
+
+        /**
+         * Returns current command
+         */
+        public function getCommand()
+        {
+            return $this->command;
         }
 
         /**
