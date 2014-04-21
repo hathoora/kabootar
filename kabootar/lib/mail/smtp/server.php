@@ -29,7 +29,6 @@ namespace hathoora\kabootar\lib\mail\smtp
                 $config['maxMailSize'] = 35882577;
 
             $this->config = $config;
-
             $this->socket->listen(
                                     $this->getConfig('port'),
                                     $this->getConfig('listenIP'));
@@ -38,26 +37,11 @@ namespace hathoora\kabootar\lib\mail\smtp
             {
                 // ref http://cr.yp.to/smtp/ehlo.html
                 $mail = new mail($conn);
-
-                $mail->write(220, $this->getconfig('hostname') .' running Kabootar Mail Server version ' . $this->version);
+                $mail->respond(220, $this->getconfig('hostname') .' Kabootar Mail Server v' . $this->version);
 
                 $mail->on('stream', function($mail)
                 {
-                    $sessionState = $mail->getSessionState();
-                    $currentCommand = $mail->getCommand();
-
-                    if ($currentCommand == 'RSET')
-                        $mail->write(250, 'Flushed', '2.1.5');
-                    else if ($currentCommand == 'EHLO')
-                    {
-                        $mail->write('250-', $this->getconfig('hostname') .' at your service, ' . $mail->getConnection()->getRemoteAddress());
-                        $mail->write('250-', 'SIZE ' . $this->getConfig('maxMailSize'));
-                        $mail->write('250-', '8BITMIME');
-                        $mail->write('250-', 'ENHANCEDSTATUSCODES');
-                        $mail->write(250, 'CHUNKING');
-                    }
-
-                    $this->emit($mail->getSessionState(), array($mail));
+                    $this->emit($mail->getCommand(), array($mail));
                 });
 
                 $conn->on('data', array($mail, 'feed'));
@@ -93,7 +77,7 @@ namespace hathoora\kabootar\lib\mail\smtp
          */
         private function log($message, $level = 'debug')
         {
-           echo $message . "\r\n";
+           //echo '--->' . $message . "\r\n";
         }
     }
 }

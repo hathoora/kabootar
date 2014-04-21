@@ -16,5 +16,13 @@ namespace hathoora\kabootar\lib\mail\smtp
         {
             return $str . $lineEnd;
         }
+
+        /**
+         * Returns true when an email address is valid
+         */
+        public static function validateEmailAddress($email)
+        {
+            return filter_var($email, FILTER_VALIDATE_EMAIL);
+        }
     }
 }
