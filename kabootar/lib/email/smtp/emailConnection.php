@@ -1,14 +1,16 @@
 <?php
-namespace hathoora\kabootar\lib\mail\smtp
+namespace hathoora\kabootar\lib\email\smtp
 {
-    use Evenement\EventEmitter,
-        React\Socket\ConnectionInterface;
+    use hathoora\kabootar\lib\email\smtp\parts\emailSender,
+        hathoora\kabootar\lib\email\smtp\parts\emailRecipient,
+        React\Socket\ConnectionInterface,
+        Evenement\EventEmitter;
 
     /**
      * Class mail object
      * @package hathoora\kabootar\lib\mail\smtp
      */
-    class mail extends EventEmitter
+    class emailConnection extends EventEmitter
     {
         /**
          * @var \React\Socket\ConnectionInterface
@@ -72,15 +74,15 @@ namespace hathoora\kabootar\lib\mail\smtp
         private $arrClientErrors = array();
 
         /**
-         * MAIL FROM user info
+         * Store parsed goodies
          */
-        private $fromEmailAddress = null;
-        private $fromEmailName = null;
+        private $theEmail = null;
 
         public function __construct(ConnectionInterface $conn)
         {
             $this->conn = $conn;
             $this->sessionId = $this->generateSessionId();
+            $this->theEmail = new \stdClass();
         }
 
         /**
@@ -98,7 +100,7 @@ namespace hathoora\kabootar\lib\mail\smtp
 
             preg_match('/^(\w+)/', $data, $arrMatches);
             $mailCmd = strtoupper(@array_pop($arrMatches));
-            $this->command = $arrSuccess = $arrError = null;
+            $this->command = $emitSecondObject = $arrSuccess = $arrError = null;
 
             /**
                 RSET @ http://tools.ietf.org/html/rfc5321#section-4.1.1.5
@@ -141,24 +143,19 @@ namespace hathoora\kabootar\lib\mail\smtp
                 // check if we are in valid session state
                 if ($this->sessionState == 'EHLO')
                 {
-                    // allow space in between MAIL FROM & <address@domain> as I have seen
-                    // other smtps allowing it
-                    if (preg_match('/^MAIL\sFROM:\s?<(.+?)>\s{0,}(SIZE=(\d+))?/i', $data, $arrMatches))
+                    $arrParseFeed = emailHelper::parseFROMFeed($data);
+                    if (is_array($arrParseFeed) && ($from = $arrParseFeed['email']))
                     {
-                        $size = null;
-                        $from = $arrMatches[1];
-                        if (isset($arrMatches[3])) // for checking SIZE=VALUE
-                            $size = $arrMatches[3];
+                        $this->sessionState = 'MAIL';
 
-                        // validate $from address
-                        if (mailParser::validateEmailAddress($from))
-                        {
-                            $arrSuccess = array(array('250', 'Ok', '2.1.0'));
-                            $this->sessionState = 'MAIL';
-                        }
-                        // invalid email address format
-                        else
-                            $arrError = array(array(503, 'Bad sender\'s mailbox address', '5.1.8'));
+                        /**
+                         * Let the "stream" emit decide what needs to happen here
+                         *
+                         * we are passing $this to emailAddress, which would respond to
+                         * emailSender->isValid() & emailSender->isInvalid() functions
+                         */
+                        $emitSecondObject = new emailSender($this, $from);
+                        $this->theEmail->from = $emitSecondObject;
                     }
                     else
                         $arrError = array(array(503, 'Syntax error', '5.5.2'));
@@ -179,18 +176,22 @@ namespace hathoora\kabootar\lib\mail\smtp
                 // check if we are in valid session state
                 if ($this->sessionState == 'MAIL')
                 {
-                    if (preg_match('/^RCPT\sTO:\s?<(.+?)>/i', $data, $arrMatches))
+                    $arrParseFeed = emailHelper::parseTOFeed($data);
+                    if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
                     {
-                        $from = $arrMatches[1];
+                        $this->sessionState = 'RCPT';
 
-                        // validate $from address
-                        if (mailParser::validateEmailAddress($from))
-                        {
-                            // let the "stream" emit decide what needs to happen here
-                        }
-                        // invalid email address format
-                        else
-                            $arrError = array(array(503, 'Bad destination mailbox address syntax', '5.1.3'));
+                        /**
+                         * Let the "stream" emit decide what needs to happen here
+                         *
+                         * we are passing $this to emailAddress, which would respond to
+                         * emailSender->isValid() & emailSender->isInvalid() functions
+                         */
+                        $emitSecondObject = new emailRecipient($this, $to);
+
+                        if (!isset($this->theEmail->to))
+                            $this->theEmail->to = array();
+                        $this->theEmail->to[$to] = $emitSecondObject;
                     }
                     else
                         $arrError = array(array(503, 'Syntax error', '5.5.2'));
@@ -206,7 +207,42 @@ namespace hathoora\kabootar\lib\mail\smtp
              */
             else if ($mailCmd == 'DATA')
             {
+                $this->command = 'DATA';
 
+                // check if we are in valid session state
+                if ($this->sessionState == 'RCPT')
+                {
+                    $this->sessionState = 'DATA';
+                    $arrSuccess = array(array(354, 'Go ahead'));
+                }
+                // EHLO not initialized
+                else if (!$this->sessionState)
+                    $arrError = array(array(503, 'EHLO/HELO first', '5.5.1'));
+                else
+                    $arrError = array(array(503, 'Invalid command', '5.5.1'));
+            }
+            // we are getting data
+            else if ($this->sessionState == 'DATA')
+            {
+                $this->command = $this->sessionState = 'DATA-INCOMING';
+
+                if (!isset($this->theEmail->content))
+                    $this->theEmail->content = $data;
+            }
+            // we have got all the data
+            else if ($this->sessionState == 'DATA-INCOMING')
+            {
+                // this is end of email
+                if (preg_match('/^\.\r\n$/', $data))
+                {
+                    $this->command = $this->sessionState = 'DATA-END';
+                    $arrSuccess = array(array(250, 'OK'));
+                }
+            }
+            else if ($mailCmd == 'QUIT')
+            {
+                $this->command = $this->sessionState = 'QUIT';
+                $arrSuccess = array(array(221, 'closing connection', '2.0.0'));
             }
             else
                 $arrError = array(array(503, 'Invalid command', '5.5.1'));
@@ -219,19 +255,27 @@ namespace hathoora\kabootar\lib\mail\smtp
             $this->respondBuffer = (array) $arrSuccess + (array) $arrError;
 
             // notify so one can implement their own handlers
-            $this->emit('stream', array($this));
+            $this->emit('stream', array($this, $emitSecondObject));
 
+            // if steam emit was not overwritten, proceed with buffered response
+            $this->sendBufferedResponse();
+        }
+        /**
+         * Sends buffered response
+         */
+        private function sendBufferedResponse()
+        {
             if (is_array($this->respondBuffer) && count($this->respondBuffer))
             {
                 // copy to local var as respond would reset $this->respondBuffer
                 $respondBuffer = $this->respondBuffer;
-
                 foreach ($respondBuffer as $_arrMsg)
                 {
                     call_user_func_array(array($this, 'respond'), (array) $_arrMsg);
                 }
             }
         }
+
 
         /**
          * Write to stream
@@ -253,7 +297,7 @@ namespace hathoora\kabootar\lib\mail\smtp
             if ($this->sessionState != 'EHLO')
                 $message .= ' - '. $this->getSessionId();
 
-            $message = $code . $extendedCode . mailParser::messageln($message);
+            $message = $code . $extendedCode . emailHelper::messageln($message);
 
             $this->logTransaction('S', $message);
 
@@ -320,6 +364,22 @@ namespace hathoora\kabootar\lib\mail\smtp
         }
 
         /**
+         * check if stream is readable
+         */
+        public function isReadable()
+        {
+            return $this->conn->isReadable();
+        }
+
+        /**
+         * Close conn
+         */
+        public function close()
+        {
+            return $this->conn->close();
+        }
+
+        /**
          * log transaction for debugging
          *
          * @param string $who (S)erver, (C)lient
@@ -328,6 +388,8 @@ namespace hathoora\kabootar\lib\mail\smtp
         {
             if ($this->debug)
                 $this->completeTransaction .= $data;
+
+            echo "$who: $data";
         }
 
         /**
