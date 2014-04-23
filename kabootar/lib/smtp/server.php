@@ -1,5 +1,5 @@
 <?php
-namespace hathoora\kabootar\lib\email\smtp
+namespace hathoora\kabootar\lib\smtp
 {
     use Evenement\EventEmitter,
         React\Socket\ServerInterface as SocketServerInterface;
@@ -44,15 +44,9 @@ namespace hathoora\kabootar\lib\email\smtp
                                                                 'timestamp' => time(),
                                                                 'emailConnection' => &$emailConnection);
 
-                $emailConnection->respond(220, $this->getconfig('hostname') .' Kabootar Mail Server v' . $this->version);
-
-                $emailConnection->on('stream', function($email, $secondaryObject)
+                $emailConnection->on('stream', function($email)
                 {
-                    $command = $email->getCommand();
-                    if ($command == 'MAIL' || $command == 'RCPT')
-                        $this->emit($email->getCommand(), array($email, $secondaryObject));
-                    else
-                        $this->emit($email->getCommand(), array($email));
+                    $this->emit($email->getCommand(), array($email));
                 });
 
                 $conn->on('data', function($data) use($emailConnection)
@@ -71,12 +65,23 @@ namespace hathoora\kabootar\lib\email\smtp
 
                 $conn->on('close', function($conn) use ($emailConnection)
                 {
+                    echo '------------------>' . $emailConnection->getEmail()->getRaw() . '<----------';
                     $emailConnection->close();
                     $sessionid = $emailConnection->getSessionId();
                     if (isset($this->arrEmailConnections[$sessionid]))
                         unset($this->arrEmailConnections[$sessionid]);
                 });
             });
+
+            /*
+            $this->socket->addPeriodicTimer(50, function ()
+            {
+                $memory = memory_get_usage() / 1024;
+                $formatted = number_format($memory, 3).'K';
+                echo date('Y-m-d') . ' -> ' . "Current memory usage: {$formatted}\n";
+
+            });
+            */
         }
 
         /**
@@ -91,7 +96,6 @@ namespace hathoora\kabootar\lib\email\smtp
 
             return $value;
         }
-
 
 
 

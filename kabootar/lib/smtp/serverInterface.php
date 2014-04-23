@@ -1,5 +1,5 @@
 <?php
-namespace hathoora\kabootar\lib\email\smtp
+namespace hathoora\kabootar\lib\smtp
 {
     use Evenement\EventEmitterInterface;
 

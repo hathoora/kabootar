@@ -1,10 +1,10 @@
 <?php
-namespace hathoora\kabootar\lib\email\smtp
+namespace hathoora\kabootar\lib\smtp\helper
 {
     /**
      * Email Helper & parser class
      */
-    class emailHelper
+    class emailper
     {
         /**
          * Given RCPT, TO, CC, BCC fields, this would parse email address

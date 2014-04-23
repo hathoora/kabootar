@@ -1,15 +1,15 @@
 <?php
-namespace hathoora\kabootar\lib\email\smtp\parts
+namespace hathoora\kabootar\lib\smtp\parts
 {
-    use hathoora\kabootar\lib\email\smtp\emailConnection,
-        hathoora\kabootar\lib\email\smtp\emailHelper,
-        Evenement\EventEmitter;
+    use hathoora\kabootar\lib\smtp\emailConnection,
+        hathoora\kabootar\lib\smtp\helper\emailper;
 
     /**
-     * The person sending the email
+     * TO, CC, BCC - person getting the email
+     *
      * @package hathoora\kabootar\lib\mail\smtp
      */
-    class emailSender extends EventEmitter
+    class recipient
     {
         /**
          * Holds email connection
@@ -53,7 +53,7 @@ namespace hathoora\kabootar\lib\email\smtp\parts
          */
         public function getDomain()
         {
-            return emailHelper::getDomainFromEmailAddress($this->email);
+            return emailper::getDomainFromEmailAddress($this->email);
         }
 
         /**
@@ -75,7 +75,7 @@ namespace hathoora\kabootar\lib\email\smtp\parts
             $this->isValid = false;
 
             // this should be done in emailConnection class
-            $this->emailConnection->respond(503, 'Bad sender\'s mailbox address', '5.1.8');
+            $this->emailConnection->respond(503, 'Bad destination mailbox address syntax', '5.1.3');
         }
     }
 }

@@ -1,8 +1,7 @@
 <?php
-namespace hathoora\kabootar\lib\email\smtp
+namespace hathoora\kabootar\lib\smtp
 {
-    use hathoora\kabootar\lib\email\smtp\parts\emailSender,
-        hathoora\kabootar\lib\email\smtp\parts\emailRecipient,
+    use hathoora\kabootar\lib\smtp\helper\emailper,
         React\Socket\ConnectionInterface,
         Evenement\EventEmitter;
 
@@ -16,18 +15,24 @@ namespace hathoora\kabootar\lib\email\smtp
          * @var \React\Socket\ConnectionInterface
          */
         private $conn;
-
+        
         /**
-         * Session id
+         * object representation of an email
+         * @var \hathoora\kabootar\lib\stmp\emailContent
          */
-        private $sessionId;
+        private $email = null;
 
         /**
-         * Current mail command (EHLO, MAIl, RCPT, DATA etc..)
+         * Current mail command (EHLO, MAIl, RCPT, DATA , QUIT, RSET and custom DATA, DATA-INCOMING, DATA-END, etc..)
          *
          * @var
          */
         private $command;
+        
+        /**
+         * Session id
+         */
+        private $sessionId;
 
         /**
          * State of session (EHLO, MAIL, RCPT, DATA)
@@ -50,39 +55,28 @@ namespace hathoora\kabootar\lib\email\smtp
         private $totalClientErrors = 0;
 
         /**
-         * This is for debugging to store of server <-> client transaction
-         */
-        private $completeTransaction;
-
-        /**
-         * @var
-         */
-        private $debug = false;
-
-        /**
-         * Keep auto generated repsonse from kabootar mail message in buffer
-         * to allow dev to implement their own logic via "stream" emit
+         * Stores auto generated response from feed() which emits "stream" for
+         * others to implement their own logic. If such an implement does not exist
+         * then this auto generate buffer is send to mail client.
          *
          * This is reset with every respond() call
          */
-        private $respondBuffer;
-
-        /**
-         * Keeping track of client errors
-         * this is reset with RSET & EHLO command
-         */
-        private $arrClientErrors = array();
-
-        /**
-         * Store parsed goodies
-         */
-        private $theEmail = null;
+        private $respondDefaultMessage;
 
         public function __construct(ConnectionInterface $conn)
         {
             $this->conn = $conn;
             $this->sessionId = $this->generateSessionId();
-            $this->theEmail = new \stdClass();
+            $this->respond(220, 'Kabootar Mail Server');
+            $this->email = new emailContent();
+        }
+
+        /**
+         * Returns the email object
+         */
+        public function getEmail()
+        {
+            return $this->email;
         }
 
         /**
@@ -100,42 +94,45 @@ namespace hathoora\kabootar\lib\email\smtp
 
             preg_match('/^(\w+)/', $data, $arrMatches);
             $mailCmd = strtoupper(@array_pop($arrMatches));
-            $this->command = $emitSecondObject = $arrSuccess = $arrError = null;
+            $this->command = null;
+
+            // these are array of array
+            $arrDefaultMessageSuccess = $arrDefaultMessageError = null;
 
             /**
-                RSET @ http://tools.ietf.org/html/rfc5321#section-4.1.1.5
-                Syntax -> rset = "RSET" CRLF
-                S: 250
+             *   RSET @ http://tools.ietf.org/html/rfc5321#section-4.1.1.5
+             *   Syntax -> rset = "RSET" CRLF
+             *   S: 250
              */
             if ($mailCmd == 'RSET' && preg_match('/^RSET\r\n$/i', $data))
             {
                 $this->reset();
                 $this->command = 'RSET';
-                $arrSuccess = array(array(250, 'Flushed', '2.1.5'));
+                $arrDefaultMessageSuccess = array(array(250, 'Flushed', '2.1.5'));
             }
             /**
-                S: 250
-                E: 504 (a conforming implementation could return this code only
-                in fairly obscure cases), 550, 502 (permitted only with an old-
-                style server that does not support EHLO)
+             *  S: 250
+             *   E: 504 (a conforming implementation could return this code only
+             *   in fairly obscure cases), 550, 502 (permitted only with an old-
+             *   style server that does not support EHLO)
              */
             else if ($mailCmd == 'EHLO' || $mailCmd == 'HELO')
             {
                 $this->reset();
                 $this->sessionState = $this->command = 'EHLO';
 
-                $arrSuccess = array(array('250-', 'at your service,' . $this->conn->getRemoteAddress()),
+                $arrDefaultMessageSuccess = array(array('250-', 'at your service,' . $this->conn->getRemoteAddress()),
                                     array('250-', 'SIZE 4999') /*. $this->getConfig('maxMailSize'))*/,
                                     array('250-', '8BITMIME'),
                                     array('250-', 'ENHANCEDSTATUSCODES'),
                                     array(250, 'CHUNKING'));
             }
             /**
-                MAIL @ http://tools.ietf.org/html/rfc5321#section-3.3
-                syntax is MAIL FROM:<reverse-path> [SP <mail-parameters> ] <CRLF>
-                with size extension is also valid @ MAIL FROM:<userx@test.ex> SIZE=1000000000
-                S: 250
-                E: 552, 451, 452, 550, 553, 503, 455, 555
+             *  MAIL @ http://tools.ietf.org/html/rfc5321#section-3.3
+             *   syntax is MAIL FROM:<reverse-path> [SP <mail-parameters> ] <CRLF>
+             *   with size extension is also valid @ MAIL FROM:<userx@test.ex> SIZE=1000000000
+             *   S: 250
+             *   E: 552, 451, 452, 550, 553, 503, 455, 555
              */
             else if ($mailCmd == 'MAIL')
             {
@@ -143,32 +140,30 @@ namespace hathoora\kabootar\lib\email\smtp
                 // check if we are in valid session state
                 if ($this->sessionState == 'EHLO')
                 {
-                    $arrParseFeed = emailHelper::parseFROMFeed($data);
+                    $arrParseFeed = emailper::parseFROMFeed($data);
                     if (is_array($arrParseFeed) && ($from = $arrParseFeed['email']))
                     {
                         $this->sessionState = 'MAIL';
+                        $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
 
                         /**
                          * Let the "stream" emit decide what needs to happen here
-                         *
-                         * we are passing $this to emailAddress, which would respond to
-                         * emailSender->isValid() & emailSender->isInvalid() functions
                          */
-                        $emitSecondObject = new emailSender($this, $from);
-                        $this->theEmail->from = $emitSecondObject;
+                        $this->email->storeRawHeader($data);
+                        $this->email->setHeaderFrom($from);
                     }
                     else
-                        $arrError = array(array(503, 'Syntax error', '5.5.2'));
+                        $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
                 }
                 // EHLO not initialized
                 else if (!$this->sessionState)
-                    $arrError = array(array(503, 'EHLO/HELO first', '5.5.1'));
+                    $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
                 else
-                    $arrError = array(array(503, 'Invalid command', '5.5.1'));
+                    $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
             }
             /**
-                S: 250, 251 (but see Section 3.4 for discussion of 251 and 551)
-                E: 550, 551, 552, 553, 450, 451, 452, 503, 455, 555
+              *  S: 250, 251 (but see Section 3.4 for discussion of 251 and 551)
+              *  E: 550, 551, 552, 553, 450, 451, 452, 503, 455, 555
              */
             else if ($mailCmd == 'RCPT')
             {
@@ -176,34 +171,29 @@ namespace hathoora\kabootar\lib\email\smtp
                 // check if we are in valid session state
                 if ($this->sessionState == 'MAIL')
                 {
-                    $arrParseFeed = emailHelper::parseTOFeed($data);
+                    $arrParseFeed = emailper::parseTOFeed($data);
                     if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
                     {
                         $this->sessionState = 'RCPT';
+                        $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
 
                         /**
                          * Let the "stream" emit decide what needs to happen here
-                         *
-                         * we are passing $this to emailAddress, which would respond to
-                         * emailSender->isValid() & emailSender->isInvalid() functions
                          */
-                        $emitSecondObject = new emailRecipient($this, $to);
-
-                        if (!isset($this->theEmail->to))
-                            $this->theEmail->to = array();
-                        $this->theEmail->to[$to] = $emitSecondObject;
+                        $this->email->storeRawHeader($data);
+                        $this->email->setHeaderTo($to);
                     }
                     else
-                        $arrError = array(array(503, 'Syntax error', '5.5.2'));
+                        $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
                 }
                 else
-                    $arrError = array(array(503, 'Mail first', '5.5.1'));
+                    $arrDefaultMessageError = array(array(503, 'Mail first', '5.5.1'));
             }
             /**
-                I: 354 -> data -> S: 250
-                       E: 552, 554, 451, 452
-                       E: 450, 550 (rejections for policy reasons)
-                 E: 503, 554
+             *  I: 354 -> data -> S: 250
+             *          E: 552, 554, 451, 452
+             *          E: 450, 550 (rejections for policy reasons)
+             *    E: 503, 554
              */
             else if ($mailCmd == 'DATA')
             {
@@ -213,21 +203,20 @@ namespace hathoora\kabootar\lib\email\smtp
                 if ($this->sessionState == 'RCPT')
                 {
                     $this->sessionState = 'DATA';
-                    $arrSuccess = array(array(354, 'Go ahead'));
+                    $arrDefaultMessageSuccess = array(array(354, 'Go ahead'));
                 }
                 // EHLO not initialized
                 else if (!$this->sessionState)
-                    $arrError = array(array(503, 'EHLO/HELO first', '5.5.1'));
+                    $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
                 else
-                    $arrError = array(array(503, 'Invalid command', '5.5.1'));
+                    $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
             }
             // we are getting data
             else if ($this->sessionState == 'DATA')
             {
                 $this->command = $this->sessionState = 'DATA-INCOMING';
-
-                if (!isset($this->theEmail->content))
-                    $this->theEmail->content = $data;
+                $this->email->storeRawBody($data);
+                $this->email->setBody($data);
             }
             // we have got all the data
             else if ($this->sessionState == 'DATA-INCOMING')
@@ -236,39 +225,40 @@ namespace hathoora\kabootar\lib\email\smtp
                 if (preg_match('/^\.\r\n$/', $data))
                 {
                     $this->command = $this->sessionState = 'DATA-END';
-                    $arrSuccess = array(array(250, 'OK'));
+                    $arrDefaultMessageSuccess = array(array(250, 'OK'));
                 }
             }
             else if ($mailCmd == 'QUIT')
             {
                 $this->command = $this->sessionState = 'QUIT';
-                $arrSuccess = array(array(221, 'closing connection', '2.0.0'));
+                $arrDefaultMessageSuccess = array(array(221, 'closing connection', '2.0.0'));
             }
             else
-                $arrError = array(array(503, 'Invalid command', '5.5.1'));
+                $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
 
             // there were errors?
-            if (is_array($arrError))
-                $this->logClientErrors($arrError);
+            if (is_array($arrDefaultMessageError))
+                $this->totalClientErrors++;
 
             // let devs reply to stream (via emit "stream")
-            $this->respondBuffer = (array) $arrSuccess + (array) $arrError;
+            $this->respondDefaultMessage = (array) $arrDefaultMessageSuccess + (array) $arrDefaultMessageError;
 
             // notify so one can implement their own handlers
-            $this->emit('stream', array($this, $emitSecondObject));
+            $this->emit('stream', array($this));
 
             // if steam emit was not overwritten, proceed with buffered response
-            $this->sendBufferedResponse();
+            $this->respondDefault();
         }
+        
         /**
          * Sends buffered response
          */
-        private function sendBufferedResponse()
+        private function respondDefault()
         {
-            if (is_array($this->respondBuffer) && count($this->respondBuffer))
+            if (is_array($this->respondDefaultMessage) && count($this->respondDefaultMessage))
             {
-                // copy to local var as respond would reset $this->respondBuffer
-                $respondBuffer = $this->respondBuffer;
+                // copy to local var as respond would reset $this->respondDefaultMessage
+                $respondBuffer = $this->respondDefaultMessage;
                 foreach ($respondBuffer as $_arrMsg)
                 {
                     call_user_func_array(array($this, 'respond'), (array) $_arrMsg);
@@ -276,13 +266,12 @@ namespace hathoora\kabootar\lib\email\smtp
             }
         }
 
-
         /**
          * Write to stream
          */
         public function respond($code, $message, $extendedCode = null)
         {
-            $this->respondBuffer = null;
+            $this->respondDefaultMessage = null;
 
             if (preg_match('/-$/', $code))
                 $extendedCode = null;
@@ -297,11 +286,19 @@ namespace hathoora\kabootar\lib\email\smtp
             if ($this->sessionState != 'EHLO')
                 $message .= ' - '. $this->getSessionId();
 
-            $message = $code . $extendedCode . emailHelper::messageln($message);
+            $message = $code . $extendedCode . emailper::messageln($message);
 
             $this->logTransaction('S', $message);
 
             return $this->conn->write($message);
+        }
+
+        /**
+         * Generate a uniq smtp id
+         */
+        private function generateSessionId()
+        {
+            return uniqid();
         }
 
         /**
@@ -321,6 +318,7 @@ namespace hathoora\kabootar\lib\email\smtp
         {
             $this->sessionState = $state;
         }
+
         /**
          * Returns session id
          */
@@ -351,16 +349,8 @@ namespace hathoora\kabootar\lib\email\smtp
          */
         public function reset()
         {
-            $this->sessionState = $this->envelop = $this->content = null;
-            $this->arrClientErrors = array();
-        }
-
-        /**
-         * Generate a uniq smtp id
-         */
-        private function generateSessionId()
-        {
-            return uniqid();
+            $this->sessionState = null;
+            $this->email = new emailContent();
         }
 
         /**
@@ -386,22 +376,7 @@ namespace hathoora\kabootar\lib\email\smtp
          */
         private function logTransaction($who, $data)
         {
-            if ($this->debug)
-                $this->completeTransaction .= $data;
-
             echo "$who: $data";
-        }
-
-        /**
-         * log errors
-         *
-         *
-         */
-        private function logClientErrors($arrError)
-        {
-            $this->totalClientErrors++;
-            if ($this->debug && is_array($arrError))
-                array_push($this->arrClientErrors, array_pop($arrError));
         }
     }
 }
