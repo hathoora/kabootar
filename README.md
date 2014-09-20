@@ -2,6 +2,10 @@
 
 Based on async I/O (Ratchet)
 
+## Installation
+
+To install place this code inside app/hathoora/kabootar
+
 ## EventEmitter Events
 
 * `MAIL`: Emitted whenever client sends a valid "MAIL FROM" command

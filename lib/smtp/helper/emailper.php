@@ -52,7 +52,7 @@ namespace hathoora\kabootar\lib\smtp\helper
                     $arrResult = array();
                     $arrResult['email'] = $from;
 
-                    if ($size)
+                    if ($size != null)
                         $arrResult['size'] = $size;
                 }
             }

@@ -6,11 +6,25 @@ namespace hathoora\kabootar\lib\smtp
         Evenement\EventEmitter;
 
     /**
-     * Class mail object
+     * Class email connection which represents a connection and handles communication
      * @package hathoora\kabootar\lib\mail\smtp
      */
     class emailConnection extends EventEmitter
     {
+        /**
+         * Timestamp for when connected
+         *
+         * @var timestamp
+         */
+        public $timeConnectedAt;
+
+        /**
+         * Timestamp for last activity
+         *
+         * @var timestamp
+         */
+        public $timeLastActivityAt;
+
         /**
          * @var \React\Socket\ConnectionInterface
          */
@@ -63,12 +77,14 @@ namespace hathoora\kabootar\lib\smtp
          */
         private $respondDefaultMessage;
 
-        public function __construct(ConnectionInterface $conn)
+        public function __construct(ConnectionInterface $conn, $config = array())
         {
+            $this->timeConnectedAt = $this->timeLastActivityAt = time();
             $this->conn = $conn;
             $this->sessionId = $this->generateSessionId();
             $this->respond(220, 'Kabootar Mail Server');
             $this->email = new emailContent();
+            $this->config = $config;
         }
 
         /**
@@ -90,6 +106,11 @@ namespace hathoora\kabootar\lib\smtp
          */
         public function feed($data)
         {
+            // if already in error closing, then no need to respond back to further queries & await connection close
+            if (preg_match('/ERROR-/', $this->sessionState))
+                return;
+
+            $this->timeLastActivityAt = time();
             $this->logTransaction('C', $data);
 
             preg_match('/^(\w+)/', $data, $arrMatches);
@@ -121,8 +142,8 @@ namespace hathoora\kabootar\lib\smtp
                 $this->reset();
                 $this->sessionState = $this->command = 'EHLO';
 
-                $arrDefaultMessageSuccess = array(array('250-', 'at your service,' . $this->conn->getRemoteAddress()),
-                                    array('250-', 'SIZE 4999') /*. $this->getConfig('maxMailSize'))*/,
+                $arrDefaultMessageSuccess = array(array('250-', $this->config['hostname'] . ' at your service, ' . $this->conn->getRemoteAddress()),
+                                    array('250-', 'SIZE ' . $this->config['maxMailSize']),
                                     array('250-', '8BITMIME'),
                                     array('250-', 'ENHANCEDSTATUSCODES'),
                                     array(250, 'CHUNKING'));
@@ -143,14 +164,19 @@ namespace hathoora\kabootar\lib\smtp
                     $arrParseFeed = emailper::parseFROMFeed($data);
                     if (is_array($arrParseFeed) && ($from = $arrParseFeed['email']))
                     {
-                        $this->sessionState = 'MAIL';
-                        $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
+                        if (isset($arrParseFeed['size']) && $arrParseFeed['size'] <= $this->config['maxMailSize'])
+                        {
+                            $this->sessionState = 'MAIL';
+                            $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
 
-                        /**
-                         * Let the "stream" emit decide what needs to happen here
-                         */
-                        $this->email->storeRawHeader($data);
-                        $this->email->setHeaderFrom($from);
+                            /**
+                             * Let the "stream" emit decide what needs to happen here
+                             */
+                            $this->email->storeRawHeader($data);
+                            $this->email->setHeaderFrom($from);
+                        }
+                        else
+                            $arrDefaultMessageError = array(array(552, 'Message size exceeds fixed limit', '5.3.4'));
                     }
                     else
                         $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
@@ -169,7 +195,7 @@ namespace hathoora\kabootar\lib\smtp
             {
                 $this->command = 'RCPT';
                 // check if we are in valid session state
-                if ($this->sessionState == 'MAIL')
+                if ($this->sessionState == 'MAIL' || $this->sessionState == 'RCPT')
                 {
                     $arrParseFeed = emailper::parseTOFeed($data);
                     if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
@@ -240,14 +266,20 @@ namespace hathoora\kabootar\lib\smtp
             if (is_array($arrDefaultMessageError))
                 $this->totalClientErrors++;
 
-            // let devs reply to stream (via emit "stream")
-            $this->respondDefaultMessage = (array) $arrDefaultMessageSuccess + (array) $arrDefaultMessageError;
+            if ($this->totalClientErrors <= $this->config['maxClientErrors'])
+            {
+                // let devs reply to stream (via emit "stream")
+                $this->respondDefaultMessage = (array) $arrDefaultMessageSuccess + (array) $arrDefaultMessageError;
 
-            // notify so one can implement their own handlers
-            $this->emit('stream', array($this));
+                // notify so one can implement their own handlers only when request was valid
+                if ($this->isValidCommand())
+                    $this->emit('stream', array($this));
 
-            // if steam emit was not overwritten, proceed with buffered response
-            $this->respondDefault();
+                // if steam emit was not overwritten, proceed with buffered response
+                $this->respondDefault();
+            }
+            else
+                $this->closeTooManyErrors();
         }
         
         /**
@@ -264,6 +296,9 @@ namespace hathoora\kabootar\lib\smtp
                     call_user_func_array(array($this, 'respond'), (array) $_arrMsg);
                 }
             }
+
+            if ($this->sessionState == 'QUIT' || preg_match('/ERROR-/', $this->sessionState))
+                $this->close();
         }
 
         /**
@@ -366,7 +401,29 @@ namespace hathoora\kabootar\lib\smtp
          */
         public function close()
         {
-            return $this->conn->close();
+            $this->emit('close-delay', array($this->conn));
+        }
+
+        /**
+         * Connection timeout
+         */
+        public function closeTimeout()
+        {
+            $this->respondDefaultMessage = array(array(421, 'Error: timeout exceeded', '4.4.2'));
+            $this->sessionState = 'ERROR-TIMEOUT';
+            $this->emit('stream', array($this));
+            $this->respondDefault();
+        }
+
+        /**
+         * Client has encountered too many errors
+         */
+        public function closeTooManyErrors()
+        {
+            $this->respondDefaultMessage = array(array(502, 'Error: too many unrecognized commands', '5.5.1'));
+            $this->sessionState = 'ERROR-TIMEOUT';
+            $this->emit('stream', array($this));
+            $this->respondDefault();
         }
 
         /**

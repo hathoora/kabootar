@@ -1,1 +1,0 @@
-<?phpnamespace hathoora\kabootar\controller{    use hathoora\controller\controller,        hathoora\kabootar\lib\smtpRun;    class serverController extends controller    {        public function server()        {            ini_set('max_execution_time', 0);            smtpRun::run();        }    }}        

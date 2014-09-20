@@ -1,1 +1,0 @@
-<?phpnamespace hathoora\kabootar\controller{    class defaultController extends baseController    {        public function index()        {            die('a');        }    }}
