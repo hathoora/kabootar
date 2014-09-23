@@ -4,11 +4,11 @@ namespace hathoora\kabootar\lib\smtp
     use hathoora\kabootar\lib\smtp\helper\emailper;
 
     /**
-     * Class emailContent - object representation of an email
+     * Class email bag - object representation of an email
      *
      * @package hathoora\kabootar\lib\smtp
      */
-    class emailContent
+    class emailBag
     {
         /**
          * @var stores raw header

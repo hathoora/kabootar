@@ -19,7 +19,7 @@ namespace hathoora\kabootar\lib\smtp
         private $socket;
         private $config;
         private $version = 0.1;
-        private $arrEmailConnections = array();
+        private $arrClientConnections = array();
 
         public function __construct(LoopInterface $loop, array $config = array())
         {
@@ -47,36 +47,44 @@ namespace hathoora\kabootar\lib\smtp
 
             $this->socket->on('connection', function($conn)
             {
-                $emailConnection = new emailConnection($conn, $this->config);
-                $sessionid = $emailConnection->getSessionId();
+                $client = new client($conn, $this->config);
+                $sessionid = $client->getSessionId();
 
                 // @var \React\EventLoop\Timer\TimerInterface
-                $emailConnectionTimeoutTimer =  $this->loop->addPeriodicTimer(10, function() use($emailConnection)
+                $emailConnectionTimeoutTimer =  $this->loop->addPeriodicTimer(10, function() use($client)
                 {
                     $time = time();
-                    $idle = (time() - $emailConnection->timeLastActivityAt);
-                    echo "Connection timeout check for ". $emailConnection->getSessionId() .": idle for $idle secs \n";
+                    $idle = (time() - $client->timeLastActivityAt);
+                    echo "Connection timeout check for ". $client->getSessionId() .": idle for $idle secs \n";
                     if ($idle > $this->getConfig('maxIdleTime'))
-                        $emailConnection->closeTimeout();
+                        $client->closeTimeout();
                 });
 
-                $this->arrEmailConnections[$sessionid] = array(
-                                                                'emailConnection' => $emailConnection,
+                $this->arrClientConnections[$sessionid] = array(
+                                                                'emailConnection' => $client,
                                                                 'timeoutTimer' => $emailConnectionTimeoutTimer);
 
-                $emailConnection->on('stream', function($emailConnection)
+
+
+                $this->emit('connection', array($client));
+
+                $client->on('stream', function($client)
                 {
-                    $this->emit($emailConnection->getSessionState(), array($emailConnection));
+                    $this->emit($client->getSessionState(), array($client));
                 });
 
-                $conn->on('data', function($data) use($emailConnection)
+
+
+                $conn->on('data', function($data) use($client)
                 {
-                    $emailConnection->feed($data);
+                    $client->feed($data);
                 });
+
+
 
                 // we need to add some wait before killing the connection to flush out all the messages to client
                 // so "close-delay" was emitted
-                $emailConnection->on('close-delay', function($conn)
+                $client->on('close-delay', function($conn)
                 {
                     $this->loop->addTimer(rand(1,2), function() use($conn)
                     {
@@ -84,21 +92,22 @@ namespace hathoora\kabootar\lib\smtp
                     });
                 });
 
-                $conn->on('close', function($conn) use ($emailConnection)
+
+                $conn->on('close', function($conn) use ($client)
                 {
-                    echo '-------------------' . "\n" . $emailConnection->getEmail()->getRaw() . "\n" . '-------------------';
-                    $emailConnection->close();
-                    $sessionid = $emailConnection->getSessionId();
-                    if (isset($this->arrEmailConnections[$sessionid]))
+                    echo '-------------------' . "\n" . $client->getEmailBag()->getRaw() . "\n" . '-------------------';
+                    $client->close();
+                    $sessionid = $client->getSessionId();
+                    if (isset($this->arrClientConnections[$sessionid]))
                     {
                         // clear timeout connection timer
-                        if (isset($this->arrEmailConnections[$sessionid]['timeoutTimer']))
-                            $this->loop->cancelTimer($this->arrEmailConnections[$sessionid]['timeoutTimer']);
+                        if (isset($this->arrClientConnections[$sessionid]['timeoutTimer']))
+                            $this->loop->cancelTimer($this->arrClientConnections[$sessionid]['timeoutTimer']);
 
-                        unset($this->arrEmailConnections[$sessionid]);
+                        unset($this->arrClientConnections[$sessionid]);
                     }
 
-                    $this->emit('close', array($emailConnection));
+                    $this->emit('close', array($client));
                 });
             });
 

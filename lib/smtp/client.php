@@ -7,10 +7,11 @@ namespace hathoora\kabootar\lib\smtp
         React\Promise\PromiseInterface;
 
     /**
-     * Class email connection which represents a connection and handles communication
+     * Client sending the email
+     *
      * @package hathoora\kabootar\lib\mail\smtp
      */
-    class emailConnection extends EventEmitter
+    class client extends EventEmitter
     {
         /**
          * Timestamp for when connected
@@ -33,9 +34,15 @@ namespace hathoora\kabootar\lib\smtp
         
         /**
          * object representation of an email
-         * @var \hathoora\kabootar\lib\stmp\emailContent
+         * @var \hathoora\kabootar\lib\smtp\emailBag
          */
-        private $email = null;
+        private $emailBag = null;
+
+        /**
+         * DNS stuff
+         * @var \hathoora\kabootar\lib\smtp\emailDNSBag
+         */
+        private $emailDNSBag;
 
         /**
          * Current mail command (EHLO, MAIl, RCPT, DATA , QUIT, RSET and custom DATA, DATA-INCOMING, DATA-END, etc..)
@@ -91,16 +98,17 @@ namespace hathoora\kabootar\lib\smtp
             $this->conn = $conn;
             $this->sessionId = $this->generateSessionId();
             $this->respond(220, 'Kabootar Mail Server');
-            $this->email = new emailContent();
+            $this->emailBag = new emailBag();
+            $this->emailDNSBag = new emailDNSBag();
             $this->config = $config;
         }
 
         /**
          * Returns the email object
          */
-        public function getEmail()
+        public function getEmailBag()
         {
-            return $this->email;
+            return $this->emailBag;
         }
 
         /**
@@ -180,8 +188,8 @@ namespace hathoora\kabootar\lib\smtp
                             /**
                              * Let the "stream" emit decide what needs to happen here
                              */
-                            $this->email->storeRawHeader($data);
-                            $this->email->setHeaderFrom($from);
+                            $this->emailBag->storeRawHeader($data);
+                            $this->emailBag->setHeaderFrom($from);
                         }
                         else
                             $arrDefaultMessageError = array(array(552, 'Message size exceeds fixed limit', '5.3.4'));
@@ -214,8 +222,8 @@ namespace hathoora\kabootar\lib\smtp
                         /**
                          * Let the "stream" emit decide what needs to happen here
                          */
-                        $this->email->storeRawHeader($data);
-                        $this->email->setHeaderTo($to);
+                        $this->emailBag->storeRawHeader($data);
+                        $this->emailBag->setHeaderTo($to);
                     }
                     else
                         $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
@@ -249,8 +257,8 @@ namespace hathoora\kabootar\lib\smtp
             else if ($this->sessionState == 'DATA')
             {
                 $this->command = $this->sessionState = 'DATA-INCOMING';
-                $this->email->storeRawBody($data);
-                $this->email->setBody($data);
+                $this->emailBag->storeRawBody($data);
+                $this->emailBag->setBody($data);
             }
             // we have got all the data
             else if ($this->sessionState == 'DATA-INCOMING')
@@ -450,7 +458,7 @@ namespace hathoora\kabootar\lib\smtp
         public function reset()
         {
             $this->sessionState = null;
-            $this->email = new emailContent();
+            $this->emailBag = new emailBag();
         }
 
         /**
@@ -477,7 +485,10 @@ namespace hathoora\kabootar\lib\smtp
             $this->respondDefaultMessage = array(array(421, 'Error: timeout exceeded', '4.4.2'));
             $this->sessionState = 'ERROR-TIMEOUT';
             $this->emit('stream', array($this));
-            $this->respondDefault();
+            if ($this->hasAnswer())
+                $this->answerIt();
+            else
+                $this->respondDefault();
         }
 
         /**
@@ -488,7 +499,10 @@ namespace hathoora\kabootar\lib\smtp
             $this->respondDefaultMessage = array(array(502, 'Error: too many unrecognized commands', '5.5.1'));
             $this->sessionState = 'ERROR-TIMEOUT';
             $this->emit('stream', array($this));
-            $this->respondDefault();
+            if ($this->hasAnswer())
+                $this->answerIt();
+            else
+                $this->respondDefault();
         }
 
         /**

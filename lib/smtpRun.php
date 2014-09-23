@@ -16,30 +16,15 @@ namespace hathoora\kabootar\lib
 
             $smtp = new \hathoora\kabootar\lib\smtp\server($loop, $arrConfig);
 
-            $smtp->on('connection', function($conn)
+            $smtp->on('connection', function($client)
             {
             });
 
-            $smtp->on('EHLO', function($email)
-            {
-                $deferred = new Deferred();
-                $email->answer($deferred->promise());
-
-                $x = function($email) use($deferred)
-                {
-                    if (rand(1,5) < 3)
-                        $deferred->resolve(array(array(200, 'success..')));
-                    else
-                        $deferred->reject(array(array(354, 'error')));
-                };
-                $x($email);
-            });
-
-            $smtp->on('RCPT', function($email)
+            $smtp->on('RCPT', function($client)
             {
             });
 
-            $smtp->on('close', function($email)
+            $smtp->on('close', function($client)
             {
 
             });
