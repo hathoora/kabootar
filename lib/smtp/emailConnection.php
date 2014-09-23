@@ -3,7 +3,8 @@ namespace hathoora\kabootar\lib\smtp
 {
     use hathoora\kabootar\lib\smtp\helper\emailper,
         React\Socket\ConnectionInterface,
-        Evenement\EventEmitter;
+        Evenement\EventEmitter,
+        React\Promise\PromiseInterface;
 
     /**
      * Class email connection which represents a connection and handles communication
@@ -76,6 +77,13 @@ namespace hathoora\kabootar\lib\smtp
          * This is reset with every respond() call
          */
         private $respondDefaultMessage;
+
+        /**
+         * Promise of "stream" event listener
+         *
+         * @var \React\Promise\PromiseInterface
+         */
+        private $answerPromise;
 
         public function __construct(ConnectionInterface $conn, $config = array())
         {
@@ -275,13 +283,70 @@ namespace hathoora\kabootar\lib\smtp
                 if ($this->isValidCommand())
                     $this->emit('stream', array($this));
 
+                if ($this->hasAnswer())
+                    $this->answerIt();
                 // if steam emit was not overwritten, proceed with buffered response
-                $this->respondDefault();
+                else
+                    $this->respondDefault();
             }
             else
                 $this->closeTooManyErrors();
         }
-        
+
+        /**
+         * Checks if we have a pending acknowledge to act upon instead of defaults
+         */
+        private function hasAnswer()
+        {
+            if ($this->answerPromise instanceof PromiseInterface)
+                return true;
+        }
+
+        /**
+         * Sends the answer back to user
+         */
+        private function answerIt()
+        {
+            if ($this->answerPromise instanceof PromiseInterface)
+            {
+                $this->answerPromise->then(
+                    // successful message
+                    function($arrResponse)
+                    {
+                        if (is_array($arrResponse))
+                            $this->respondDefaultMessage = $arrResponse;
+                        $this->respondDefault();
+                    },
+                    // rejection
+                    function($arrReason)
+                    {
+                        $this->respondDefaultMessage = $arrReason;
+                        $this->totalClientErrors++;
+                        $this->respondDefault();
+                    }
+                );
+            }
+
+            $this->answerPromise = null;
+        }
+
+        /**
+         * This function sets React\Promise\PromiseInterface which is set
+         * from "stream" listeners (fired from feed function)
+         *
+         * @param object \React\Promise\PromiseInterface
+         */
+        public function answer($promise)
+        {
+            if ($promise instanceof PromiseInterface)
+                $this->answerPromise = $promise;
+            else if (is_array($promise))
+            {
+                $this->respondDefaultMessage = $promise;
+                $this->respondDefault();
+            }
+        }
+
         /**
          * Sends buffered response
          */
@@ -304,7 +369,7 @@ namespace hathoora\kabootar\lib\smtp
         /**
          * Write to stream
          */
-        public function respond($code, $message, $extendedCode = null)
+        private function respond($code, $message, $extendedCode = null)
         {
             $this->respondDefaultMessage = null;
 

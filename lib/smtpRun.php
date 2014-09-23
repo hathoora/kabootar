@@ -1,6 +1,8 @@
 <?php
 namespace hathoora\kabootar\lib
 {
+    use React\Promise\Deferred;
+
     class smtpRun
     {
         public static function run()
@@ -18,9 +20,19 @@ namespace hathoora\kabootar\lib
             {
             });
 
-            $smtp->on('MAIL', function($email)
+            $smtp->on('EHLO', function($email)
             {
+                $deferred = new Deferred();
+                $email->answer($deferred->promise());
 
+                $x = function($email) use($deferred)
+                {
+                    if (rand(1,5) < 3)
+                        $deferred->resolve(array(array(200, 'success..')));
+                    else
+                        $deferred->reject(array(array(354, 'error')));
+                };
+                $x($email);
             });
 
             $smtp->on('RCPT', function($email)
